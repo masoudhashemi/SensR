@@ -11,8 +11,12 @@ def calc_sensitive_directions(x_no_sensitive, sensitive_group):
     sensitive_group: sensitive features (can be more than one column)
     """
     sensitive_directions = []
-    for y_protected in sensitive_group.T:
-        lr = LogisticRegression(solver="liblinear", fit_intercept=True)
+    if np.ndim(sensitive_group) == 1:
+        sensitive_group = sensitive_group.reshape(1, -1)
+    for y_protected in sensitive_group:
+        lr = LogisticRegression(
+            solver="liblinear", fit_intercept=True, penalty="l1"
+        )
         lr.fit(x_no_sensitive, y_protected)
         sensitive_directions.append(lr.coef_.flatten())
 
@@ -60,14 +64,18 @@ def sample_perturbation(
     regularizer=100,
     learning_rate=5e-2,
     num_steps=200,
+    normalize=False,
 ):
-    x_start = x.clone()
-    x_start.requires_grad = False
+    x_start = x.clone().detach()
     x_ = x.clone()
     x_.requires_grad = True
-    sensetive_directions_ = normalize_sensitive_directions(
-        sensetive_directions
-    )
+    if normalize:
+        sensetive_directions_ = normalize_sensitive_directions(
+            sensetive_directions.cpu().numpy().T
+        )
+        sensetive_directions_ = torch.FloatTensor(sensetive_directions_)
+    else:
+        sensetive_directions_ = sensetive_directions
     for i in range(num_steps):
         prob = model(x_)
         perturb = unprotected_direction(x_ - x_start, sensetive_directions_)
@@ -75,8 +83,7 @@ def sample_perturbation(
             nn.CrossEntropyLoss()(prob, y)
             - regularizer * torch.linalg.norm(perturb) ** 2
         )
-        gradient = torch.autograd.gradient(loss, x_)
-        x_ = x_ + learning_rate * gradient
-        x_start = x_.clone()
-        x_start.requires_grad = False
+        gradient = torch.autograd.grad(loss, x_)
+        x_ = x_ + learning_rate * gradient[0]
+        x_start = x_.clone().detach()
     return x_
