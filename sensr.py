@@ -60,25 +60,19 @@ def sample_perturbation(
     model,
     x,
     y,
-    sensetive_directions,
+    sensitive_directions,
     regularizer=100,
     learning_rate=5e-2,
     num_steps=200,
-    normalize=False,
 ):
     x_start = x.clone().detach()
     x_ = x.clone()
     x_.requires_grad = True
-    if normalize:
-        sensetive_directions_ = normalize_sensitive_directions(
-            sensetive_directions.cpu().numpy().T
-        )
-        sensetive_directions_ = torch.FloatTensor(sensetive_directions_)
-    else:
-        sensetive_directions_ = sensetive_directions
+    proj_compl = compl_svd_projector(sensitive_directions)
+    fair_loss = fair_dist(proj_compl)
     for i in range(num_steps):
         prob = model(x_)
-        perturb = unprotected_direction(x_ - x_start, sensetive_directions_)
+        perturb = fair_loss(x_, x_start)
         loss = (
             nn.CrossEntropyLoss()(prob, y)
             - regularizer * torch.linalg.norm(perturb) ** 2
@@ -86,4 +80,4 @@ def sample_perturbation(
         gradient = torch.autograd.grad(loss, x_)
         x_ = x_ + learning_rate * gradient[0]
         x_start = x_.clone().detach()
-    return x_
+    return x_.detach()
