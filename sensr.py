@@ -1,5 +1,6 @@
 import numpy as np
 import torch
+import torch.optim as optim
 import torch.nn as nn
 from sklearn.decomposition import TruncatedSVD
 from sklearn.linear_model import LogisticRegression
@@ -31,8 +32,8 @@ def normalize_sensitive_directions(basis):
     return proj
 
 
-def compl_svd_projector(sensitive_directions, svd=-1):
-    if svd > 0:
+def compl_svd_projector(sensitive_directions, svd=False):
+    if svd:
         tSVD = TruncatedSVD(n_components=svd)
         tSVD.fit(sensitive_directions)
         basis = tSVD.components_.T
@@ -65,19 +66,25 @@ def sample_perturbation(
     learning_rate=5e-2,
     num_steps=200,
 ):
-    x_start = x.clone().detach()
+    x_start = x.clone().detach() + 3 * torch.rand_like(x)
     x_ = x.clone()
     x_.requires_grad = True
     proj_compl = compl_svd_projector(sensitive_directions)
     fair_loss = fair_dist(proj_compl)
+    optimizer = optim.SGD([x_], lr=learning_rate)
     for i in range(num_steps):
         prob = model(x_)
         perturb = fair_loss(x_, x_start)
-        loss = (
+        loss = -1*(
             nn.CrossEntropyLoss()(prob, y)
-            - regularizer * torch.linalg.norm(perturb) ** 2
+            - regularizer * torch.linalg.norm(perturb)**2
         )
-        gradient = torch.autograd.grad(loss, x_)
-        x_ = x_ + learning_rate * gradient[0]
+        # gradient = torch.autograd.grad(loss, x_)
+        # x_ = x_ + learning_rate * gradient[0]
+        
+        optimizer.zero_grad()
+        loss.backward()
+        optimizer.step()
+        
         x_start = x_.clone().detach()
     return x_.detach()
