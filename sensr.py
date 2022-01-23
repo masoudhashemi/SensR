@@ -32,8 +32,8 @@ def normalize_sensitive_directions(basis):
     return proj
 
 
-def compl_svd_projector(sensitive_directions, svd=False):
-    if svd:
+def compl_svd_projector(sensitive_directions, svd=-1):
+    if svd>0:
         tSVD = TruncatedSVD(n_components=svd)
         tSVD.fit(sensitive_directions)
         basis = tSVD.components_.T
@@ -66,25 +66,19 @@ def sample_perturbation(
     learning_rate=5e-2,
     num_steps=200,
 ):
-    x_start = x.clone().detach() + 3 * torch.rand_like(x)
+    x_start = x.clone().detach() + min(1e-2, learning_rate) * torch.rand_like(x)
     x_ = x.clone()
     x_.requires_grad = True
     proj_compl = compl_svd_projector(sensitive_directions)
-    fair_loss = fair_dist(proj_compl)
-    optimizer = optim.SGD([x_], lr=learning_rate)
+    fair_metric = fair_dist(proj_compl)
     for i in range(num_steps):
         prob = model(x_)
-        perturb = fair_loss(x_, x_start)
-        loss = -1*(
+        perturb = fair_metric(x_, x_start)
+        fair_loss = (torch.linalg.norm(perturb)**2).clamp_(0, 1e13)
+        loss = (
             nn.CrossEntropyLoss()(prob, y)
-            - regularizer * torch.linalg.norm(perturb)**2
+            - regularizer * fair_loss
         )
-        # gradient = torch.autograd.grad(loss, x_)
-        # x_ = x_ + learning_rate * gradient[0]
-        
-        optimizer.zero_grad()
-        loss.backward()
-        optimizer.step()
-        
-        x_start = x_.clone().detach()
+        gradient = torch.autograd.grad(loss, x_, retain_graph=False)
+        x_ = x_ + learning_rate * gradient[0]
     return x_.detach()
