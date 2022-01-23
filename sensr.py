@@ -127,7 +127,7 @@ def train_fair_model(
             else:
                 batch_size = x.size(0)
 
-                full_adv_weights = torch.rand(
+                full_adv_weights = eps * torch.rand(
                     (batch_size, n_features),
                     device=device,
                     requires_grad=False,
@@ -135,7 +135,7 @@ def train_fair_model(
                 full_adv_weights.requires_grad = True
                 
                 d_sens = sensitive_directions_.size(0)
-                adv_weights = torch.rand(
+                adv_weights = eps * torch.rand(
                     (batch_size, d_sens), device=device, requires_grad=False
                 )
                 adv_weights.requires_grad = True
