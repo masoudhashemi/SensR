@@ -1,9 +1,12 @@
 import numpy as np
 import torch
-import torch.optim as optim
 import torch.nn as nn
+import torch.optim as optim
 from sklearn.decomposition import TruncatedSVD
 from sklearn.linear_model import LogisticRegression
+from torch.autograd import Variable
+
+from models import ModelWrapper
 
 
 def calc_sensitive_directions(x_no_sensitive, sensitive_group):
@@ -33,7 +36,7 @@ def normalize_sensitive_directions(basis):
 
 
 def compl_svd_projector(sensitive_directions, svd=-1):
-    if svd>0:
+    if svd > 0:
         tSVD = TruncatedSVD(n_components=svd)
         tSVD.fit(sensitive_directions)
         basis = tSVD.components_.T
@@ -66,7 +69,9 @@ def sample_perturbation(
     learning_rate=5e-2,
     num_steps=200,
 ):
-    x_start = x.clone().detach() + min(1e-2, learning_rate) * torch.rand_like(x)
+    x_start = x.clone().detach() + min(1e-2, learning_rate) * torch.rand_like(
+        x
+    )
     x_ = x.clone()
     x_.requires_grad = True
     proj_compl = compl_svd_projector(sensitive_directions)
@@ -74,11 +79,91 @@ def sample_perturbation(
     for i in range(num_steps):
         prob = model(x_)
         perturb = fair_metric(x_, x_start)
-        fair_loss = (torch.linalg.norm(perturb)**2).clamp_(0, 1e13)
-        loss = (
-            nn.CrossEntropyLoss()(prob, y)
-            - regularizer * fair_loss
-        )
+        fair_loss = (torch.linalg.norm(perturb) ** 2).clamp_(0, 1e13)
+        loss = nn.CrossEntropyLoss()(prob, y) - regularizer * fair_loss
         gradient = torch.autograd.grad(loss, x_, retain_graph=False)
         x_ = x_ + learning_rate * gradient[0]
     return x_.detach()
+
+
+def train_fair_model(
+    model,
+    train_loader,
+    sensitive_directions,
+    epochs,
+    fair_epochs,
+    batch_size,
+    n_features,
+    eps=0.1,
+    lmbd_init=2.0,
+    device=None,
+):
+    if device is None:
+        device = "cuda" if torch.cuda.is_available() else "cpu"
+    model_ = ModelWrapper(model)
+    optimizer_clf = optim.Adam(model.parameters(), lr=0.005)
+    loss_classifier = torch.nn.CrossEntropyLoss()
+    sensitive_directions_ = normalize_sensitive_directions(
+        sensitive_directions.T
+    )
+    proj_cmpl = compl_svd_projector(sensitive_directions)
+    fair_loss = fair_dist(proj_cmpl)
+
+    start_fair_step = epochs // 2
+    lmbd = lmbd_init
+
+    full_adv_weights = torch.zeros(
+        (batch_size, n_features), device=device, requires_grad=False
+    )
+    full_adv_weights.requires_grad = True
+
+    d_sens = sensitive_directions_.size(0)
+    adv_weights = torch.zeros(
+        (batch_size, d_sens), device=device, requires_grad=False
+    )
+    adv_weights.requires_grad = True
+
+    optim_adv = optim.Adam([adv_weights], lr=0.001)
+    optim_full_adv = optim.Adam([full_adv_weights], lr=0.001)
+
+    for epoch in range(epochs):
+        for x, y, s in train_loader:
+            x, y = x.to(device), y.to(device)
+
+            if epoch < start_fair_step:
+                clf_loss = model_.train_epoch(
+                    x, y, optimizer_clf, loss_classifier
+                )
+            else:
+
+                x_fair = (
+                    x
+                    + torch.matmul(adv_weights, sensitive_directions_)
+                    + full_adv_weights
+                )
+
+                clf_loss = model_.train_epoch(
+                    x_fair, y, optimizer_clf, loss_classifier
+                )
+
+                distance = fair_loss(x, x_fair)
+                tot_loss = clf_loss - lmbd * (torch.linalg.norm(distance) ** 2)
+
+                lmbd = max(
+                    0,
+                    lmbd
+                    + max(distance.mean().detach(), eps)
+                    / min(distance.mean().detach(), eps)
+                    * (distance.mean().detach() - eps),
+                )
+
+                optim_adv.zero_grad()
+                loss_adv = -clf_loss
+                loss_adv.backward()
+                optim_adv.step()
+
+                for _ in range(fair_epochs):
+                    optim_full_adv.zero_grad()
+                    loss_adv = -tot_loss
+                    loss_adv.backward()
+                    optim_full_adv.step()

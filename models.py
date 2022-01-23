@@ -1,6 +1,9 @@
+from turtle import forward
+
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
+import torch.optim as optim
 
 
 class TabluarModel(nn.Module):
@@ -73,3 +76,29 @@ class MLP(nn.Module):
     def forward(self, x):
         x = self.mlp(x)
         return x
+
+
+class ModelWrapper(nn.Module):
+    def __init__(self, model):
+        super().__init__()
+        self.model = model
+
+    def train_epoch(self, x, y, optimizer=None, loss=None, lr=0.001):
+        if optimizer is None:
+            self.optimizer = optim.Adam(self.model.parameters(), lr=lr)
+        else:
+            self.optimizer = optimizer
+        if loss is None:
+            self.loss = nn.CrossEntropyLoss()
+        else:
+            self.loss = loss
+
+        self.optimizer.zero_grad()
+        classifier_output = self.model(x)
+        classifier_loss = self.loss(classifier_output, y)
+        classifier_loss.backward()
+        optimizer.step()
+        return classifier_loss
+
+    def forward(self, x):
+        self.model.forward(x)
