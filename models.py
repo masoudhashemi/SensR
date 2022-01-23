@@ -83,7 +83,7 @@ class ModelWrapper(nn.Module):
         super().__init__()
         self.model = model
 
-    def train_epoch(self, x, y, optimizer=None, loss=None, lr=0.001):
+    def train_epoch(self, x, y, optimizer=None, loss=None, lr=0.001, retain_graph=False):
         if optimizer is None:
             self.optimizer = optim.Adam(self.model.parameters(), lr=lr)
         else:
@@ -96,7 +96,7 @@ class ModelWrapper(nn.Module):
         self.optimizer.zero_grad()
         classifier_output = self.model(x)
         classifier_loss = self.loss(classifier_output, y)
-        classifier_loss.backward()
+        classifier_loss.backward(retain_graph=retain_graph)
         optimizer.step()
         return classifier_loss
 

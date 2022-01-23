@@ -5,6 +5,7 @@ import torch.optim as optim
 from sklearn.decomposition import TruncatedSVD
 from sklearn.linear_model import LogisticRegression
 from torch.autograd import Variable
+from tqdm import tqdm
 
 from models import ModelWrapper
 
@@ -92,7 +93,6 @@ def train_fair_model(
     sensitive_directions,
     epochs,
     fair_epochs,
-    batch_size,
     n_features,
     eps=0.1,
     lmbd_init=2.0,
@@ -100,70 +100,83 @@ def train_fair_model(
 ):
     if device is None:
         device = "cuda" if torch.cuda.is_available() else "cpu"
-    model_ = ModelWrapper(model)
+
     optimizer_clf = optim.Adam(model.parameters(), lr=0.005)
     loss_classifier = torch.nn.CrossEntropyLoss()
     sensitive_directions_ = normalize_sensitive_directions(
         sensitive_directions.T
     )
     proj_cmpl = compl_svd_projector(sensitive_directions)
+    sensitive_directions_ = torch.FloatTensor(sensitive_directions_)
     fair_loss = fair_dist(proj_cmpl)
 
     start_fair_step = epochs // 2
-    lmbd = lmbd_init
 
-    full_adv_weights = torch.zeros(
-        (batch_size, n_features), device=device, requires_grad=False
-    )
-    full_adv_weights.requires_grad = True
-
-    d_sens = sensitive_directions_.size(0)
-    adv_weights = torch.zeros(
-        (batch_size, d_sens), device=device, requires_grad=False
-    )
-    adv_weights.requires_grad = True
-
-    optim_adv = optim.Adam([adv_weights], lr=0.001)
-    optim_full_adv = optim.Adam([full_adv_weights], lr=0.001)
-
-    for epoch in range(epochs):
-        for x, y, s in train_loader:
+    pbar = tqdm(range(epochs))
+    for epoch in pbar:
+        for x, y, _ in train_loader:
+            lmbd = lmbd_init
             x, y = x.to(device), y.to(device)
-
+            x.requires_grad = False
             if epoch < start_fair_step:
-                clf_loss = model_.train_epoch(
-                    x, y, optimizer_clf, loss_classifier
-                )
+                clf_output = model(x)
+                clf_loss = loss_classifier(clf_output, y)
+                optimizer_clf.zero_grad()
+                clf_loss.backward()
+                optimizer_clf.step()
             else:
+                batch_size = x.size(0)
 
+                full_adv_weights = torch.rand(
+                    (batch_size, n_features),
+                    device=device,
+                    requires_grad=False,
+                )
+                full_adv_weights.requires_grad = True
+                
+                d_sens = sensitive_directions_.size(0)
+                adv_weights = torch.rand(
+                    (batch_size, d_sens), device=device, requires_grad=False
+                )
+                adv_weights.requires_grad = True
+
+                optim_adv = optim.Adam([adv_weights], lr=0.001)
+                optim_full_adv = optim.Adam([full_adv_weights], lr=0.001)
+                                
                 x_fair = (
                     x
                     + torch.matmul(adv_weights, sensitive_directions_)
                     + full_adv_weights
                 )
 
-                clf_loss = model_.train_epoch(
-                    x_fair, y, optimizer_clf, loss_classifier
-                )
-
-                distance = fair_loss(x, x_fair)
-                tot_loss = clf_loss - lmbd * (torch.linalg.norm(distance) ** 2)
-
-                lmbd = max(
-                    0,
-                    lmbd
-                    + max(distance.mean().detach(), eps)
-                    / min(distance.mean().detach(), eps)
-                    * (distance.mean().detach() - eps),
-                )
+                clf_output = model(x_fair)
+                clf_loss = loss_classifier(clf_output, y)
 
                 optim_adv.zero_grad()
                 loss_adv = -clf_loss
-                loss_adv.backward()
+                loss_adv.backward(retain_graph=True)
                 optim_adv.step()
 
                 for _ in range(fair_epochs):
+                    clf_output = model(x_fair)
+                    clf_loss = loss_classifier(clf_output, y)
+                    distance = fair_loss(x, x_fair)
+                    tot_loss = clf_loss - lmbd * (torch.linalg.norm(distance) ** 2)
                     optim_full_adv.zero_grad()
                     loss_adv = -tot_loss
-                    loss_adv.backward()
+                    loss_adv.backward(retain_graph=True)
                     optim_full_adv.step()
+
+                    lmbd = max(
+                        0,
+                        lmbd
+                        + max(distance.mean().detach(), eps)
+                        / min(distance.mean().detach(), eps)
+                        * (distance.mean().detach() - eps),
+                    )
+                
+                clf_output = model(x_fair)
+                clf_loss = loss_classifier(clf_output, y)
+                optimizer_clf.zero_grad()
+                clf_loss.backward()
+                optimizer_clf.step()
